@@ -33,6 +33,7 @@ class FirewallRule(object):
                  id,
                  name,
                  description,
+                 direction=None,
                  rules_ip_protocol=None,
                  rules_from_port=None,
                  rules_to_port=None,
@@ -51,19 +52,20 @@ class FirewallRule(object):
             - rules_grants_name (unicode)
             - rules_grants_cidr_ip (unicode)
         """
-        assert isinstance(id, unicode), "Invalid id: {}".format(id)
-        assert isinstance(name, unicode)
-        assert isinstance(description, unicode)
-        assert rules_ip_protocol in (u'tcp', u'udp', u'icmp', None)
-        assert isinstance(rules_from_port, (unicode, NoneType))
-        assert isinstance(rules_to_port, (unicode, NoneType))
-        assert isinstance(rules_grants_group_id, (unicode, NoneType))
-        assert isinstance(rules_grants_name, (unicode, NoneType))
-        assert isinstance(rules_grants_cidr_ip, (unicode, NoneType))
+        # assert isinstance(id, unicode), "Invalid id: {}".format(id)
+        # assert isinstance(name, unicode)
+        # assert isinstance(description, unicode)
+        # assert rules_ip_protocol in (u'tcp', u'udp', u'icmp',u'ALL', None)
+        # assert isinstance(rules_from_port, (unicode, NoneType))
+        # assert isinstance(rules_to_port, (unicode, NoneType))
+        # assert isinstance(rules_grants_group_id, (unicode, NoneType))
+        # assert isinstance(rules_grants_name, (unicode, NoneType))
+        # assert isinstance(rules_grants_cidr_ip, (unicode, NoneType))
 
         self.id = id
         self.name = name
         self.description = description
+        self.direction = direction
         self.rules_ip_protocol = rules_ip_protocol
         self.rules_from_port = rules_from_port
         self.rules_to_port = rules_to_port
@@ -80,6 +82,7 @@ class FirewallRule(object):
             'id': self.id,
             'name': self.name,
             'description': self.description,
+            'direction': self.direction,
             'rules_ip_protocol': self.rules_ip_protocol,
             'rules_from_port': self.rules_from_port,
             'rules_to_port': self.rules_to_port,
@@ -123,7 +126,12 @@ class Firewall(object):
             if 'rules' in main_row:
                 for rule_row in main_row['rules']:
                     if 'grants' in rule_row:
+                        if rule_row['ip_protocol'] == '-1':
+                            ip_protocol = "ALL"
+                        else:
+                            ip_protocol = rule_row['ip_protocol']
                         for grant_row in rule_row['grants']:
+                            x = 1
                             if 'group_id' in grant_row and 'name' in grant_row:
                                 # Set a var to not go over 80 chars
                                 group_id = grant_row['group_id']
@@ -131,10 +139,11 @@ class Firewall(object):
                                     main_row['id'],
                                     main_row['name'],
                                     main_row['description'],
-                                    rules_ip_protocol=rule_row['ip_protocol'],
+                                    grant_row['direction'],
+                                    rules_ip_protocol=ip_protocol,
                                     rules_from_port=rule_row['from_port'],
                                     rules_to_port=rule_row['to_port'],
-                                    rules_grants_group_id=group_id,
+                                    rules_grants_group_id=grant_row['group_id'],
                                     rules_grants_name=grant_row['name'])
                                 list_of_rules.append(fr)
                             elif 'cidr_ip' in grant_row:
@@ -142,7 +151,8 @@ class Firewall(object):
                                     main_row['id'],
                                     main_row['name'],
                                     main_row['description'],
-                                    rules_ip_protocol=rule_row['ip_protocol'],
+                                    grant_row['direction'],
+                                    rules_ip_protocol=ip_protocol,
                                     rules_from_port=rule_row['from_port'],
                                     rules_to_port=rule_row['to_port'],
                                     rules_grants_cidr_ip=grant_row['cidr_ip'])
@@ -155,9 +165,12 @@ class Firewall(object):
                             main_row['id'],
                             main_row['name'],
                             main_row['description'],
-                            rules_ip_protocol=rule_row['ip_protocol'],
+                            grant_row['direction'],
+                            rules_ip_protocol=ip_protocol,
                             rules_from_port=rule_row['from_port'],
-                            rules_to_port=rule_row['to_port'])
+                            rules_to_port=rule_row['to_port'],
+                            rules_grants_group_id=group_id,
+                            rules_grants_name=grant_row['name'])
                         list_of_rules.append(fr)
             else:
                 fr = FirewallRule(main_row['id'],
@@ -170,6 +183,7 @@ class Firewall(object):
                              key=lambda fr: (fr.id,
                                              fr.name,
                                              fr.description,
+                                             fr.direction,
                                              fr.rules_ip_protocol,
                                              fr.rules_from_port,
                                              fr.rules_to_port,
@@ -203,6 +217,7 @@ class Firewall(object):
         fieldnames = ['id',
                       'name',
                       'description',
+                      'direction',
                       'rules_ip_protocol',
                       'rules_from_port',
                       'rules_to_port',
@@ -233,10 +248,18 @@ class Firewall(object):
 
         conn = boto.connect_ec2()
         security_groups = conn.get_all_security_groups()
+        sglookup = {}
+        
+        
+        for group in security_groups:
+            sglookup[group.id] = group.name
+        
+        
         for group in security_groups:
             group_dict = dict()
             group_dict['id'] = group.id
             group_dict['name'] = group.name
+            
             if group.description:
                 group_dict['description'] = group.description
 
@@ -254,8 +277,41 @@ class Firewall(object):
 
                 for grant in rule.grants:
                     grant_dict = dict()
+                    grant_dict['direction'] = 'in'
                     if grant.name:
                         grant_dict['name'] = grant.name
+                    elif grant.group_id:
+                        grant_dict['name'] = sglookup[grant.group_id]
+
+                    if grant.group_id:
+                        grant_dict['group_id'] = grant.group_id
+                    if grant.cidr_ip:
+                        grant_dict['cidr_ip'] = grant.cidr_ip
+
+                    
+                    rule_dict['grants'].append(grant_dict)
+
+                group_dict['rules'].append(rule_dict)
+
+            if group.rules_egress:
+                group_dict['rules'] = list()
+
+            for rule in group.rules_egress:
+                rule_dict = dict()
+                rule_dict['ip_protocol'] = rule.ip_protocol
+                rule_dict['from_port'] = rule.from_port
+                rule_dict['to_port'] = rule.to_port
+
+                if rule.grants:
+                    rule_dict['grants'] = list()
+
+                for grant in rule.grants:
+                    grant_dict = dict()
+                    grant_dict['direction'] = 'out'
+                    if grant.name:
+                        grant_dict['name'] = grant.name
+                    elif grant.group_id:
+                        grant_dict['name'] = sglookup[grant.group_id]
                     if grant.group_id:
                         grant_dict['group_id'] = grant.group_id
                     if grant.cidr_ip:
@@ -263,7 +319,8 @@ class Firewall(object):
 
                     rule_dict['grants'].append(grant_dict)
 
-                group_dict['rules'].append(rule_dict)
+                direction = 'out'
+                group_dict['rules'].append(rule_dict)                
 
             list_of_rules.append(group_dict)
 
